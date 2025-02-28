@@ -1,0 +1,321 @@
+---
+title: "Global COVID-19 Dashboard"
+author: "Charles Olalekan Collins"
+date: "`r Sys.Date()`"
+output:
+  flexdashboard::flex_dashboard:
+    orientation: columns
+    vertical_layout: fill
+    theme: journal
+runtime: shiny
+---
+
+<style>
+/* Make all dashboard columns fill the viewport height */
+.flexdashboard .col-sm-5,
+.flexdashboard .col-sm-3,
+.flexdashboard .col-sm-2 {
+    height: 50vh !important;
+    overflow-y: auto;  /* Allow scrolling within a column if needed */
+}
+</style>
+
+```{r setup, include=FALSE}
+# Set CRAN mirror
+options(repos = c(CRAN = "https://cloud.r-project.org/"))
+
+# Install and load required packages
+required_packages <- c("flexdashboard", "shiny", "crosstalk", "dplyr", 
+                       "tidyr", "lubridate", "ggplot2", "plotly", "leaflet", 
+                       "DT", "treemapify")
+new_packages <- required_packages[!(required_packages %in% installed.packages()[, "Package"])]
+if(length(new_packages)) install.packages(new_packages)
+
+library(flexdashboard)
+library(shiny)
+library(crosstalk)
+library(dplyr)
+library(tidyr)
+library(lubridate)
+library(ggplot2)    # Make sure this is here!
+library(plotly)
+library(leaflet)
+library(DT)
+library(treemapify)
+
+
+# 2) Load & Inspect Your COVID-19 Data
+# Replace with the path to your CSV. Example columns assumed:
+#   Country, Date, Confirmed, Deaths, Recovered, Active, Latitude, Longitude, WHO.Region
+covid_data <- read.csv("C:\\Users\\charl\\OneDrive\\Desktop\\project\\project data\\covid_19_clean_complete.csv", stringsAsFactors = FALSE)
+
+# Example: Assume columns include Country, Date, Confirmed, etc.
+# Parse the Date column using lubridate (adjust orders if needed)
+covid_data$Date <- parse_date_time(covid_data$Date, orders = c("ymd", "mdy", "dmy"))
+
+# Load crosstalk and create a SharedData object
+library(crosstalk)
+# Now that covid_data is loaded, create the shared object:
+shared_covid <- SharedData$new(covid_data, key = ~Country, group = "covid")
+
+# If your "WHO Region" column is named differently (e.g., "WHO Region" or "WHO_Region"),
+# rename it or adjust references below. Example:
+# covid_data <- covid_data %>% rename(WHO.Region = WHO.Region)
+
+# ------------------------------------------------------------------
+
+# 3) Convert and Clean Columns
+covid_data$Latitude  <- as.numeric(covid_data$Latitude)
+covid_data$Longitude <- as.numeric(covid_data$Longitude)
+
+# If your dates are not already in YYYY-MM-DD, parse them with lubridate:
+covid_data$Date <- parse_date_time(covid_data$Date, orders = c("ymd", "mdy", "dmy"))
+
+# 4) Identify the Latest Date in the Data
+latest_date <- max(covid_data$Date, na.rm = TRUE)
+
+# ------------------------------------------------------------------
+# 4) Ensure Latitude & Longitude Are Numeric
+# ------------------------------------------------------------------
+covid_data$Latitude  <- as.numeric(covid_data$Latitude)
+covid_data$Longitude <- as.numeric(covid_data$Longitude)
+
+# ------------------------------------------------------------------
+# 5) Basic Summaries / Aggregations
+# ------------------------------------------------------------------
+total_confirmed <- sum(covid_data$Confirmed, na.rm = TRUE)
+total_deaths    <- sum(covid_data$Deaths,    na.rm = TRUE)
+total_recovered <- sum(covid_data$Recovered, na.rm = TRUE)
+total_active    <- sum(covid_data$Active,    na.rm = TRUE)
+
+# Identify the latest date in your data
+latest_date <- max(covid_data$Date, na.rm = TRUE)
+
+# Example time-series data for a line chart (Confirmed by day)
+daily_time <- covid_data %>%
+  group_by(Date) %>%
+  summarise(TotalConfirmed = sum(Confirmed, na.rm = TRUE), .groups = "drop") %>%
+  arrange(Date)
+
+# Example stacked bar by WHO region (adjust if your column is WHO.Region or WHO_Region)
+region_data <- covid_data %>%
+  group_by(WHO.Region) %>%  # rename or change if needed
+  summarise(
+    Confirmed = sum(Confirmed, na.rm = TRUE),
+    Deaths    = sum(Deaths,    na.rm = TRUE),
+    Recovered = sum(Recovered, na.rm = TRUE),
+    Active    = sum(Active,    na.rm = TRUE),
+    .groups   = "drop"
+  )
+
+region_long <- region_data %>%
+  pivot_longer(
+    cols = c("Confirmed", "Deaths", "Recovered", "Active"),
+    names_to = "Metric",
+    values_to = "Value"
+  )
+
+# Top Countries (by confirmed) on the latest date
+top_countries_data <- covid_data %>%
+  filter(Date == latest_date) %>%
+  group_by(Country) %>%
+  summarise(TotalConfirmed = sum(Confirmed, na.rm = TRUE), .groups = "drop") %>%
+  arrange(desc(TotalConfirmed)) %>%
+  slice(1:10)
+
+# 6) Prepare Data for the Pie Chart
+# We'll show the distribution of Confirmed, Deaths, Recovered, Active on the latest date
+pie_data <- covid_data %>%
+  filter(Date == latest_date) %>%
+  summarise(
+    Confirmed = sum(Confirmed, na.rm=TRUE),
+    Deaths    = sum(Deaths,    na.rm=TRUE),
+    Recovered = sum(Recovered, na.rm=TRUE),
+    Active    = sum(Active,    na.rm=TRUE)
+  ) %>%
+  pivot_longer(cols = everything(), names_to = "Category", values_to = "Count")
+
+# ------------------------------------------------------------------
+# 6) Prepare Data for the Bubble Map
+# ------------------------------------------------------------------
+map_data <- covid_data %>%
+  filter(Date == latest_date) %>%
+  group_by(Country) %>%
+  summarise(
+    Confirmed = sum(Confirmed, na.rm=TRUE),
+    Deaths    = sum(Deaths, na.rm=TRUE),
+    Recovered = sum(Recovered, na.rm=TRUE),
+    Active    = sum(Active, na.rm=TRUE),
+    Latitude  = mean(Latitude,  na.rm=TRUE),
+    Longitude = mean(Longitude, na.rm=TRUE),
+    .groups   = "drop"
+  )
+# ------------------------------------------------------------------
+# 7) Create Plots
+# ------------------------------------------------------------------
+
+# (A) LINE CHART
+line_chart <- ggplot(daily_time, aes(x = Date, y = TotalConfirmed)) +
+  geom_line(color = "blue", size = 1) +
+  labs(title = "Daily Total Confirmed Cases", x = "Date", y = "Confirmed") +
+  theme_minimal()
+
+# (B) STACKED BAR by WHO Region
+stacked_bar <- ggplot(region_long, aes(x = WHO.Region, y = Value, fill = Metric)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Totals by WHO Region", x = "WHO Region", y = "Count") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# (C) HORIZONTAL BAR: Top Countries
+bar_chart <- ggplot(top_countries_data, aes(x = reorder(Country, TotalConfirmed), y = TotalConfirmed, fill = Country)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  labs(title = paste("Top 10 Countries on", latest_date), x = "Country", y = "Confirmed") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+# (D) Prepare Data for the Pie Chart
+# We'll show the distribution of Confirmed, Deaths, Recovered, Active on the latest date
+pie_data <- covid_data %>%
+  filter(Date == latest_date) %>%
+  summarise(
+    Confirmed = sum(Confirmed, na.rm=TRUE),
+    Deaths    = sum(Deaths,    na.rm=TRUE),
+    Recovered = sum(Recovered, na.rm=TRUE),
+    Active    = sum(Active,    na.rm=TRUE)
+  ) %>%
+  pivot_longer(cols = everything(), names_to = "Category", values_to = "Count")
+
+# (E) BUBBLE MAP
+# If map_data is empty or lat/long are invalid, the map would be blank.
+# We'll do a quick check:
+if (nrow(map_data) == 0 || all(is.na(map_data$Latitude)) || all(is.na(map_data$Longitude))) {
+  bubble_map <- leaflet() %>%
+    addTiles() %>%
+    addPopups(lng = 0, lat = 0, "No map data available for the latest date.")
+} else {
+  bubble_map <- leaflet(map_data) %>%
+    addTiles() %>%
+    addCircleMarkers(
+      lng = ~Longitude, lat = ~Latitude,
+      radius = ~ifelse(Confirmed > 0, sqrt(Confirmed)/100, 2),
+      color = "red", stroke = FALSE, fillOpacity = 0.7,
+      popup = ~paste(
+        "<strong>Country:</strong>", Country, "<br/>",
+        "<strong>Confirmed:</strong>", Confirmed, "<br/>",
+        "<strong>Deaths:</strong>", Deaths, "<br/>",
+        "<strong>Recovered:</strong>", Recovered, "<br/>",
+        "<strong>Active:</strong>", Active
+      )
+    ) %>%
+    fitBounds(
+      lng1 = min(map_data$Longitude, na.rm = TRUE),
+      lat1 = min(map_data$Latitude,  na.rm = TRUE),
+      lng2 = max(map_data$Longitude, na.rm = TRUE),
+      lat2 = max(map_data$Latitude,  na.rm = TRUE)
+    )
+}
+
+```
+
+Column {data-width=500}
+-----------------------------------------------------------------------
+
+### World Covid 19 Map
+
+```{r}
+# Interactive Line Chart with Crosstalk Linking
+
+# Ensure Valid Data for Mapping
+valid_map_data <- map_data %>% filter(!is.na(Latitude) & !is.na(Longitude))
+
+# Define Color Palette Based on Confirmed Cases
+pal <- colorBin(
+  palette = c("green", "yellow", "orange", "red", "darkred"),
+  domain = valid_map_data$Confirmed,
+  bins = c(0, 1000, 10000, 50000, 100000, Inf),
+  na.color = "gray"
+)
+
+if (nrow(valid_map_data) > 0) {
+  leaflet(valid_map_data) %>%
+    addTiles() %>%
+    addCircleMarkers(
+      lng = ~Longitude, lat = ~Latitude,
+      radius = ~ifelse(Confirmed > 0, sqrt(Confirmed)/100, 2),
+      color = ~pal(Confirmed),
+      stroke = FALSE, fillOpacity = 0.7,
+      popup = ~paste(
+        "<strong>Country:</strong>", Country, "<br/>",
+        "<strong>Confirmed:</strong>", Confirmed, "<br/>",
+        "<strong>Deaths:</strong>", Deaths, "<br/>",
+        "<strong>Recovered:</strong>", Recovered, "<br/>",
+        "<strong>Active:</strong>", Active
+      )
+    ) %>%
+    addLegend(
+      position = "bottomright",
+      pal = pal,
+      values = valid_map_data$Confirmed,
+      title = "Confirmed Cases",
+      opacity = 1,
+      labFormat = labelFormat(suffix = " cases")
+    ) %>%
+    fitBounds(
+      lng1 = min(valid_map_data$Longitude, na.rm = TRUE),
+      lat1 = min(valid_map_data$Latitude,  na.rm = TRUE),
+      lng2 = max(valid_map_data$Longitude, na.rm = TRUE),
+      lat2 = max(valid_map_data$Latitude,  na.rm = TRUE)
+    )
+} else {
+  cat("No valid map data available for the latest date.")
+}
+
+```
+### Interactive Table
+
+```{r}
+datatable(
+  covid_data,
+  options = list(
+    server = TRUE,   # enable server-side processing
+    pageLength = 10,
+    autoWidth = TRUE
+  ),
+  caption = "COVID-19 Data (All Rows)"
+)
+
+
+```
+
+Column {data-width=500}
+-----------------------------------------------------------------------
+
+### Cases
+
+```{r}
+# Check that pie_data has valid totals:
+if (nrow(pie_data) == 0 || sum(pie_data$Count, na.rm = TRUE) == 0) {
+  cat("No data available for the distribution chart on the latest date.")
+} else {
+  p_bar <- ggplot(pie_data, aes(x = reorder(Category, -Count), y = Count, fill = Category)) +
+    geom_bar(stat = "identity") +
+    labs(title = paste("Distribution on", latest_date),
+         x = "Category",
+         y = "Count") +
+    theme_minimal() +
+    theme(legend.position = "none")
+  
+  plotly::ggplotly(p_bar)
+}
+ plotly::ggplotly(bar_chart)
+
+```
+
+### Total WHO Region
+
+```{r}
+plotly::ggplotly(stacked_bar)
+```
+
